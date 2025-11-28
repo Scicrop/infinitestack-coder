@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+        <meta name="description" content="" />
+        <meta name="author" content="" />
+        <title>InfiniteStack Notebook</title>
+        <link href="https://cdn.jsdelivr.net/npm/simple-datatables@7.1.2/dist/style.min.css" rel="stylesheet" />
+        <script src="https://cdn.jsdelivr.net/npm/simple-datatables@7.1.2/dist/umd/simple-datatables.min.js"></script>
+        <link href="css/styles.css" rel="stylesheet" />
+        <script src="https://use.fontawesome.com/releases/v6.3.0/js/all.js" crossorigin="anonymous"></script>
+    </head>
+    <body class="sb-nav-fixed">
+        <nav class="sb-topnav navbar navbar-expand navbar-dark bg-dark">
+            <!-- Navbar Brand-->
+            <a class="navbar-brand ps-3" href="index.html">InfiniteStack Notebook</a>
+            <!-- Sidebar Toggle-->
+            <button class="btn btn-link btn-sm order-1 order-lg-0 me-4 me-lg-0" id="sidebarToggle" href="#!"><i class="fas fa-bars"></i></button>
+            <!-- Navbar Search-->
+            <form class="d-none d-md-inline-block form-inline ms-auto me-0 me-md-3 my-2 my-md-0">
+                <div class="input-group">
+                    <input class="form-control" type="text" placeholder="Search for..." aria-label="Search for..." aria-describedby="btnNavbarSearch" />
+                    <button class="btn btn-primary" id="btnNavbarSearch" type="button"><i class="fas fa-search"></i></button>
+                </div>
+            </form>
+            <!-- Navbar-->
+            <ul class="navbar-nav ms-auto ms-md-0 me-3 me-lg-4">
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" id="navbarDropdown" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false"><i class="fas fa-user fa-fw"></i></a>
+                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdown">
+                        <li><a class="dropdown-item" href="#!">Settings</a></li>
+                        <li><a class="dropdown-item" href="#!">Activity Log</a></li>
+                        <li><hr class="dropdown-divider" /></li>
+                        <li><a class="dropdown-item" href="#!">Logout</a></li>
+                    </ul>
+                </li>
+            </ul>
+        </nav>
+        <div id="layoutSidenav">
+            <div id="layoutSidenav_nav">
+                <nav class="sb-sidenav accordion sb-sidenav-dark" id="sidenavAccordion">
+                    <div class="sb-sidenav-menu">
+                        <div class="nav">
+                            <div class="sb-sidenav-menu-heading">Dev Env</div>
+                            <a class="nav-link" href="index.html">
+                                <div class="sb-nav-link-icon"><i class="fas fa-tachometer-alt"></i></div>
+                                Projects
+                            </a>
+                            
+                            <div class="sb-sidenav-menu-heading">Tools</div>
+                            <a class="nav-link" href="charts.html">
+                                <div class="sb-nav-link-icon"><i class="fas fa-chart-area"></i></div>
+                                Data Sources
+                            </a>
+                            <a class="nav-link" href="tables.html">
+                                <div class="sb-nav-link-icon"><i class="fas fa-table"></i></div>
+                                Catalog
+                            </a>
+                        </div>
+                    </div>
+                    <div class="sb-sidenav-footer">
+                        <div class="small">Logged in as:</div>
+                        Start Bootstrap
+                    </div>
+                </nav>
+            </div>
+            <div id="layoutSidenav_content">
+                <main>
+                    <div class="container-fluid px-4">
+                        <h1 class="mt-4">Dev Env</h1>
+                        <ol class="breadcrumb mb-4">
+                            <li class="breadcrumb-item active">Projects</li>
+                            <li class="breadcrumb-item active" id="breadcrumbProjectName" style="display: none;">
+                                <span id="currentProjectBreadcrumb"></span>
+                            </li>
+                        </ol>
+                        <!-- Área para mostrar mensagens (sucesso/erro) -->
+                        <div id="projectAlert" class="alert mt-3 d-none" role="alert"></div>
+                        <div class="row">
+                            <!-- CABEÇALHO DO PROJETO ATUAL -->
+                            <div id="currentProjectHeader" class="d-none">
+                                <div class="d-flex align-items-center mb-4 p-3 bg-primary text-white rounded shadow-sm">
+                                    <h4 class="mb-0 me-3">
+                                        <i class="fas fa-folder-open me-2"></i>
+                                        <span id="currentProjectName">Projeto X</span>
+                                    </h4>
+                                    <button id="changeProjectBtn" class="btn btn-outline-light btn-sm">
+                                        Trocar Projeto
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- FORMULÁRIO DE CRIAR PROJETO (só aparece se não tiver projeto carregado) -->
+                            <div id="createProjectForm">
+                                <div class="input-group mb-3">
+                                    <input type="text" class="form-control" id="projectNameInput" placeholder="Nome do projeto" aria-label="Nome do projeto">
+                                    <button class="btn btn-success" type="button" id="createProjectBtn">
+                                        <span class="spinner-border spinner-border-sm d-none" id="loadingSpinner"></span>
+                                        Criar Projeto
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="input-group mb-3">
+                                <select class="form-select" aria-label="provider" id="providerSelect">
+                                    <option selected>Provider...</option>
+                                </select>
+                                <select class="form-select" aria-label="model" id="modelSelect">
+                                    <option selected>Model...</option>
+                                </select>
+                                <input type="text" class="form-control" placeholder="OpenAI key" aria-label="OpenAI key" aria-describedby="OpenAI key" id="openAiKeyInput">
+                                <select class="form-select" aria-label="lang-select" id="langSelect">
+                                    <option selected>Language/Structure...</option>
+                                    <option value="1">Python</option>
+                                    <option value="2">SQL</option>
+                                    <option value="3">Java (Pure)</option>
+                                    <option value="4">Java (w/ Springboot)</option>
+                                    <option value="5">JSON</option>
+                                </select>
+                            </div>
+
+                            <div class="input-group mb-3">
+                                <span class="input-group-text">GitHub</span>
+                                <input type="text" class="form-control" id="githubTokenInput" placeholder="GitHub Token" aria-label="GitHub Token">
+                                <input type="text" class="form-control" id="githubRepositoryInput" placeholder="https://github.com/user/repo" aria-label="GitHub Repository">
+                                <button class="btn btn-outline-secondary" type="button" id="button-load-readme">
+                                    <span class="spinner-border spinner-border-sm d-none" id="githubSpinner"></span>
+                                    Load Readme.md
+                                </button>
+                            </div>
+
+                            <!-- Mensagem de sucesso -->
+                            <div id="githubStatus" class="mt-2"></div>
+
+                            <div class="input-group mb-3">
+                                <select class="form-select" aria-label="provider" id="datasourceSelect">
+                                    <option selected>Data source...</option>
+                                </select>
+                                <select class="form-select" aria-label="model" id="schemaSelect">
+                                    <option selected>Schema...</option>
+                                </select>
+                                <select class="form-select" aria-label="model" id="tableSelect">
+                                    <option selected>Table...</option>
+                                </select>
+                            </div>
+
+                            <!-- Status + Toggle do DDL -->
+                            <div class="mt-3">
+                                <div id="ddlStatus" class="d-none"></div>
+
+                                <!-- Só aparece depois que carregar o DDL -->
+                                <div id="ddlControls" class="d-flex align-items-center gap-3 mt-2 d-none">
+                                    <button id="toggleDDLBtn" class="btn btn-outline-primary btn-sm" type="button">
+                                        <span class="show-text">Mostrar DDL</span>
+                                        <span class="hide-text d-none">Esconder DDL</span>
+                                    </button>
+                                    <!-- Botão para limpar DDL da memória -->
+                                    <button id="clearDdlBtn" class="btn btn-danger btn-sm d-none" title="DDL carregado na memória. Clique para limpar.">
+                                        <i class="fas fa-trash-alt me-1"></i> Limpar DDL da memória
+                                    </button>
+                                    <br><br>
+                                </div>
+                            </div>
+
+                            <!-- Área do DDL (inicialmente escondida) -->
+                            <div id="ddlContainer" class="mt-3 d-none">
+                                <pre id="ddlOutput" class="bg-dark text-light p-4 rounded shadow-sm"
+                                     style="height: 500px; overflow: auto; font-size: 0.9rem; white-space: pre-wrap;">
+                            Aguardando seleção de tabela...
+                                </pre>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="input-group mb-3">
+                                <span class="input-group-text">Function Prompt</span>
+                                <textarea class="form-control" aria-label="prompt" id="vibe-prompt" rows="3" placeholder="Ex: Crie uma API REST em Spring Boot com JPA para gerenciar usuários..."></textarea>
+                                <button class="btn btn-outline-secondary position-relative" type="button" id="button-vibe">
+                                    <span class="spinner-border spinner-border-sm d-none" id="vibeSpinner" role="status"></span>
+                                    <span id="vibeText">Vibe!</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <!-- Resultado estruturado do Vibe! -->
+                            <div id="vibeResultContainer" class="mt-4 d-none">
+                                <h5 class="mb-3">Resposta do Vibe!</h5>
+                                <div id="vibeResult" class="border rounded p-4 bg-light" style="max-height: 600px; overflow-y: auto;">
+                                    <!-- Aqui vai o conteúdo renderizado -->
+                                </div>
+                                <br>
+                                <br>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <!-- MODO JUPYTER (só aparece quando for Python ou SQL) -->
+                            <div id="jupyterMode" class="mt-5 d-none">
+                                <div class="d-flex justify-content-between align-items-center mb-3">
+                                    <h5 class="m-0">
+                                        Modo Notebook Interativo <span class="badge bg-success fs-6">Ativado</span>
+                                    </h5>
+                                    <button id="addCellBtn" class="btn btn-outline-primary btn-sm">
+                                        + Nova Célula
+                                    </button>
+                                </div>
+                                <div id="notebookCells" class="mt-3"></div>
+                                <!-- DIV DEDICADA PARA RESULTADOS SQL — SEMPRE EXISTE -->
+                                <div id="sqlResultContainer" class="mt-5 d-none">
+                                    <div class="card shadow-sm">
+                                        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                                            <h5 class="mb-0">Resultado da Consulta SQL</h5>
+                                            <button class="btn btn-sm btn-outline-light" id="closeSqlResult">×</button>
+                                        </div>
+                                        <div class="card-body p-0">
+                                            <div id="sqlResultOutput"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- MODO ACE (padrão) -->
+                            <div id="aceMode" class="mt-5">
+                                <h5>Editor de Código</h5>
+                                <div id="editor" style="height: 500px; border: 1px solid #333; border-radius: 8px;"></div>
+
+                                <div id="runCodeContainer" class="mt-3 d-none">
+                                    <button id="runCodeBtn" class="btn btn-danger btn-lg shadow">
+                                        Run Code
+                                    </button>
+                                    <small class="text-muted ms-3">Linguagem: <span id="detectedLang">detectando...</span></small>
+                                </div>
+
+                                <div id="runResult" class="mt-3 p-4 bg-dark text-light rounded d-none" style="font-family: 'Fira Code', monospace; max-height: 400px; overflow-y: auto;">
+                                    > Aguardando execução...
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </main>
+                <footer class="py-4 bg-light mt-auto">
+                    <div class="container-fluid px-4">
+                        <div class="d-flex align-items-center justify-content-between small">
+                            <div class="text-muted">Copyleft &copy; SciCrop 2025 till AGI</div>
+                            <div>
+                                <a href="#">Privacy Policy</a>
+                                &middot;
+                                <a href="#">Terms &amp; Conditions</a>
+                            </div>
+                        </div>
+                    </div>
+                </footer>
+            </div>
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+        <script src="js/scripts.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.8.0/Chart.min.js" crossorigin="anonymous"></script>
+        <script src="assets/demo/chart-area-demo.js"></script>
+        <script src="assets/demo/chart-bar-demo.js"></script>
+
+
+        <script src="js/datatables-simple-demo.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.0/ace.js"></script>
+        <script src="js/tools.js"></script>
+        <script>
+          const editor = ace.edit("editor", {
+            mode: "ace/mode/python",
+            theme: "ace/theme/github",
+            fontSize: "14px",
+            showPrintMargin: false,
+          });
+
+          // Para obter o texto:
+          // editor.getValue();
+        </script>
+        <script>
+            // GARANTE QUE O Simple-DataTables ESTEJA CARREGADO
+            window.addEventListener("load", function() {
+                if (typeof simpleDatatables === "undefined") {
+                    console.error("Simple-DataTables não foi carregado! Verifique o link CDN.");
+                } else {
+                    console.log("Simple-DataTables carregado com sucesso!");
+                }
+            });
+        </script>
+    </body>
+</html>

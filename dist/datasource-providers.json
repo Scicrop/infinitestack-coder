@@ -1,0 +1,71 @@
+{
+  "datasources": [
+    {
+      "id": "local-postgres",
+      "name": "PostgreSQL Local (Docker)",
+      "type": "postgresql",
+      "host": "localhost",
+      "port": 5432,
+      "database": "devdb",
+      "username": "postgres",
+      "password": "postgres123",
+      "schema": "public",
+      "description": "PostgreSQL rodando localmente via Docker",
+      "default": true
+    },
+    {
+      "id": "local-oracle",
+      "name": "Oracle XE Local (Docker)",
+      "type": "oracle",
+      "host": "localhost",
+      "port": 1521,
+      "database": "XE",
+      "sid": "XE",
+      "username": "system",
+      "password": "oracle",
+      "serviceName": "XE",
+      "description": "Oracle Express Edition local",
+      "default": false
+    },
+    {
+      "id": "prod-postgres-aws",
+      "name": "PostgreSQL AWS RDS (Produção)",
+      "type": "postgresql",
+      "host": "prod-db.example.com",
+      "port": 5432,
+      "database": "app_prod",
+      "username": "app_user",
+      "password": "SuperSecret123!",
+      "schema": "public",
+      "ssl": true,
+      "description": "Banco de produção na AWS",
+      "default": false
+    },
+    {
+      "id": "dev-mysql",
+      "name": "MySQL Local",
+      "type": "mysql",
+      "host": "localhost",
+      "port": 3306,
+      "database": "dev_app",
+      "username": "root",
+      "password": "root123",
+      "description": "MySQL local para desenvolvimento",
+      "default": false
+    },
+    {
+      "id": "azure-sql",
+      "name": "Azure SQL Database",
+      "type": "sqlserver",
+      "host": "meuservidor.database.windows.net",
+      "port": 1433,
+      "database": "meubanco",
+      "username": "adminuser",
+      "password": "AzurePass@2025",
+      "encrypt": true,
+      "trustServerCertificate": false,
+      "description": "SQL Server no Azure",
+      "default": false
+    }
+  ]
+}
