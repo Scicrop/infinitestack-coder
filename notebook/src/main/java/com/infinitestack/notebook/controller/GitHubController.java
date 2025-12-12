@@ -1,14 +1,12 @@
 package com.infinitestack.notebook.controller;
 
-import com.infinitestack.notebook.entity.UserExceptionEntity;
+import com.infinitestack.notebook.dto.UserExceptionEntity;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.ResourceAccessException;
 
-import java.net.URI;
-import java.util.Base64;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 

@@ -151,7 +151,114 @@ document.addEventListener("DOMContentLoaded", function () {
 
     // Executa o carregamento dos providers
     loadLLMProviders();
+
+    // inicializa o modal bootstrap
+    const modalElement = document.getElementById('logModal');
+    if (!modalElement) {
+        console.error('Elemento #logModal não encontrado.');
+        return;
+    }
+    logModal = new bootstrap.Modal(modalElement);
+
+    // tenta conectar WebSocket (se falhar, pelo menos o botão continua funcionando)
+    connectWebSocket();
+
+    // botão de rodar processo
+    const runBtnTranscribe = document.getElementById('button-tfiles');
+    if (!runBtnTranscribe) {
+        console.error('Botão #button-tfiles não encontrado no DOM.');
+        return;
+    }
+
+    runBtnTranscribe.addEventListener('click', function () {
+        // limpa logs anteriores
+        const logOutput = document.getElementById('logOutput');
+        if (logOutput) {
+            logOutput.textContent = '';
+        }
+
+        // abre o modal
+        logModal.show();
+
+        const script = 'mp4-txt.py';
+        const parameter = document.getElementById("promptFiles").value;
+
+        fetch('http://localhost:8080/api/process/run', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                script: script,
+                parameter: parameter
+            })
+        })
+            .then(resp => resp.text())
+            .then(text => {
+                console.log('Resposta /api/process/run:', text);
+                appendLogLine('[INFO] Processo iniciado para: ' + script);
+            })
+            .catch(err => {
+                console.error('Erro ao iniciar processo:', err);
+                appendLogLine('[ERRO AO INICIAR PROCESSO]');
+            });
+    });
+
+
 });
+
+let stompClient = null;
+let logModal = null;
+
+function connectWebSocket() {
+    // Garante que SockJS e Stomp existem
+    if (typeof SockJS === 'undefined') {
+        console.error('SockJS não está carregado. Confira o CDN.');
+        appendLogLine('[ERRO] SockJS não carregado.');
+        return;
+    }
+    if (typeof Stomp === 'undefined') {
+        console.error('Stomp não está carregado. Confira o CDN.');
+        appendLogLine('[ERRO] STOMP não carregado.');
+        return;
+    }
+
+    try {
+        const socket = new SockJS('http://localhost:8080/ws');   // endpoint configurado no WebSocketConfig
+        stompClient = Stomp.over(socket);
+
+        // opcional: remove logs de debug do STOMP no console
+        stompClient.debug = null;
+
+        stompClient.connect({}, function (frame) {
+            console.log('Conectado: ' + frame);
+
+            // inscreve nos logs
+            stompClient.subscribe('/topic/python-logs', function (message) {
+                const line = message.body;
+                appendLogLine(line);
+            });
+        }, function (error) {
+            console.error('Erro na conexão STOMP:', error);
+            appendLogLine('[ERRO WEBSOCKET] ' + error);
+        });
+
+    } catch (e) {
+        console.error('Falha ao inicializar WebSocket:', e);
+        appendLogLine('[ERRO] Falha ao inicializar WebSocket.');
+    }
+}
+
+function appendLogLine(line) {
+    const logOutput = document.getElementById('logOutput');
+    if (!logOutput) {
+        console.error('Elemento #logOutput não encontrado.');
+        return;
+    }
+    logOutput.textContent += line + '\n';
+    // rolar para o final automaticamente
+    logOutput.scrollTop = logOutput.scrollHeight;
+}
 
 // === IMPORTAÇÃO DE README DO GITHUB ===
 let currentReadmeContent = ""; // ← VARIÁVEL GLOBAL NO BROWSER (como você pediu)
@@ -319,12 +426,8 @@ datasourceSelect.addEventListener("change", async () => {
         const list = await res.json();
         currentDataSource = list.find(ds => ds.id === dsId);
 
-        if (currentDataSource && currentDataSource.type === "postgresql") {
-            await loadSchemas(dsId);
-        } else {
-            schemaSelect.innerHTML = '<option>Somente PostgreSQL suportado</option>';
-            showAlert("Este DataSource não é PostgreSQL. Schemas não disponíveis.", "info");
-        }
+        await loadSchemas(dsId);
+
     } catch (err) {
         showAlert("Erro ao carregar detalhes do DataSource", "danger");
     }
@@ -459,21 +562,17 @@ const vibePrompt = document.getElementById("vibe-prompt");
 const vibeButton = document.getElementById("button-vibe");
 const vibeSpinner = document.getElementById("vibeSpinner");
 const vibeText = document.getElementById("vibeText");
-
+const histMsg = document.getElementById("histMsgsInput");
 async function callOpenAI() {
     const prompt = vibePrompt.value.trim();
-    if (!prompt) {
-        showAlert("Digite um prompt para o Vibe!", "warning");
-        return;
-    }
+    if (!prompt) return showAlert("Digite um prompt para o Vibe!", "warning");
 
     const provider = document.getElementById("providerSelect")?.value;
     const model = document.getElementById("modelSelect")?.value;
     const apiKey = document.getElementById("openAiKeyInput")?.value?.trim();
 
     if (!provider || !model || !apiKey) {
-        showAlert("Configure Provider, Model e API Key primeiro!", "danger");
-        return;
+        return showAlert("Configure Provider, Model e API Key primeiro!", "danger");
     }
 
     // Loading
@@ -484,103 +583,65 @@ async function callOpenAI() {
     const resultContainer = document.getElementById("vibeResultContainer");
     const resultDiv = document.getElementById("vibeResult");
     resultContainer.classList.add("d-none");
-    resultDiv.innerHTML = "<em>Processando resposta estruturada...</em>";
+    resultDiv.innerHTML = `<em class="text-muted">Enviando contexto completo...</em>`;
 
     try {
+        // === PEGA OS CAMINHOS DO TEXTAREA (SÓ ISSO!) ===
+        const filesText = document.getElementById("promptFiles")?.value?.trim() || "";
+        const filePaths = filesText
+            .split("\n")
+            .map(line => line.trim())
+            .map(line => line.replace(/^"|"$/g, "").trim()) // remove aspas externas
+            .filter(line => line.length > 0);
+
         const currentProject = JSON.parse(localStorage.getItem("infinitestack_current_project") || "null");
 
+        // === PAYLOAD FINAL — SÓ ENVIA OS CAMINHOS ===
         const payload = {
             provider: "openai",
-            model: model,
-            apiKey: apiKey,
+            model,
+            apiKey,
             messages: [{ role: "user", content: prompt }],
-            readmeContent: currentReadmeContent || "",
-            tableDDL: currentDDL.trim() !== "" ? currentDDL : null,
-            language: document.getElementById("langSelect")?.value || "",
-            projectName: currentProject
+            readmeContent: currentReadmeContent || null,
+            tableDDL: currentDDL?.trim() || null,
+            language: document.getElementById("langSelect")?.value || null,
+            projectName: currentProject,
+            filePaths: filePaths.length > 0 ? filePaths : null,
+            database: datasourceSelect.value,
+            schema: schemaSelect.value,
+            tableName: tableSelect.value,
+            histMsg: histMsg.value
         };
 
         const response = await fetch(`${BACKEND_URL}/api/llm/chat`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(120000)
+            signal: AbortSignal.timeout(180000)
         });
 
-        if (!response.ok) throw new Error("Erro na API");
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.ExceptionMessage || `HTTP ${response.status}`);
+        }
 
         const data = await response.json();
-        const rawContent = data.choices?.[0]?.message?.content || "{}";
+        const rawContent = data.choices?.[0]?.message?.content?.trim();
 
-        // Parseia o JSON forçado
-        let parsed;
-        try {
-            parsed = JSON.parse(rawContent);
-        } catch (e) {
-            resultDiv.innerHTML = `<pre class="text-danger">JSON inválido retornado:\n${rawContent}</pre>`;
-            resultContainer.classList.remove("d-none");
-            throw e;
-        }
+        if (!rawContent) throw new Error("Resposta vazia do LLM");
 
-        // Renderiza bonito
-        let html = "";
-
-        (parsed.answers || []).forEach(answer => {
-            // Texto em Markdown
-            if (answer.markdow_answer && answer.markdow_answer.length > 0) {
-                html += '<div class="mb-4">';
-                answer.markdow_answer.forEach(line => {
-                    html += `<p class="mb-2">${line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')}</p>`;
-                });
-                html += '</div>';
-            }
-
-            // Códigos
-            if (answer.code_answer && answer.code_answer.length > 0) {
-                answer.code_answer.forEach(block => {
-                    const lang = block.type_lang || "text";
-                    const code = block.code || "";
-                    const langDisplay = lang.toUpperCase();
-
-                    html += `
-                    <div class="mb-4">
-                        <div class="d-flex justify-content-between align-items-center mb-2">
-                            <span class="badge bg-primary fs-6">${langDisplay}</span>
-                            <button class="btn btn-sm btn-outline-secondary copy-code" data-code="${btoa(unescape(encodeURIComponent(code)))}">
-                                Copiar
-                            </button>
-                            <button class="btn btn-outline-success send-to-editor" title="Enviar para o Editor Ace">
-                                Send
-                            </button>
-                        </div>
-                        <pre class="bg-dark text-light p-3 rounded" style="white-space: pre-wrap;"><code>${escapeHtml(code)}</code></pre>
-                    </div>`;
-                });
-            }
-        });
-
-        if (!html) html = "<em>Nenhum conteúdo retornado.</em>";
-        resultDiv.innerHTML = html;
-        resultContainer.classList.remove("d-none");
-
-        // Botões de copiar
-        document.querySelectorAll(".copy-code").forEach(btn => {
-            btn.addEventListener("click", function () {
-                const code = decodeURIComponent(escape(atob(this.dataset.code)));
-                navigator.clipboard.writeText(code);
-                this.textContent = "Copiado!";
-                setTimeout(() => this.textContent = "Copiar", 2000);
-            });
-        });
-
-        showAlert("Vibe estruturado concluído!", "success");
+        renderVibeResponse(rawContent, resultDiv, resultContainer);
+        showAlert(`Vibe! concluído! (${filePaths.length} arquivo(s) no contexto)`, "success");
 
     } catch (err) {
-        if (err.name === "TimeoutError") {
-            showAlert("Timeout de 120s atingido.", "danger");
-        } else {
-            showAlert("Erro no Vibe: " + err.message, "danger");
-        }
+        console.error("Erro no Vibe!:", err);
+        const msg = err.name === "TimeoutError"
+            ? "Tempo esgotado. Tente menos arquivos ou prompt menor."
+            : err.message;
+
+        resultDiv.innerHTML = `<pre class="text-danger">Erro: ${escapeHtml(msg)}</pre>`;
+        resultContainer.classList.remove("d-none");
+        showAlert("Falha no Vibe!: " + msg, "danger");
     } finally {
         vibeButton.disabled = false;
         vibeSpinner.classList.add("d-none");
@@ -588,12 +649,111 @@ async function callOpenAI() {
     }
 }
 
+// === FUNÇÃO AUXILIAR: CARREGA ARQUIVOS DO promptFiles ===
+async function loadFilesFromPromptFiles() {
+    const textarea = document.getElementById("promptFiles");
+    const text = textarea?.value?.trim();
+    if (!text) return [];
 
+    const paths = text
+        .split("\n")
+        .map(line => line.trim())
+        .map(line => line.replace(/^"|"$/g, "").trim())
+        .filter(line => line.length > 0);
 
+    if (paths.length === 0) return [];
+
+    const files = [];
+    for (const path of paths) {
+        try {
+            const res = await fetch(`${BACKEND_URL}/api/vibe/files/read?path=${encodeURIComponent(path)}`);
+            const content = res.ok ? await res.text() : `// ERRO 404: Arquivo não encontrado`;
+            files.push({ path, content });
+        } catch (err) {
+            files.push({ path, content: `// ERRO: Não foi possível ler o arquivo` });
+        }
+    }
+    return files;
+}
+
+// === FUNÇÃO AUXILIAR: RENDERIZA RESPOSTA DO VIBE! ===
+function renderVibeResponse(rawContent, resultDiv, resultContainer) {
+    let parsed;
+    try {
+        parsed = JSON.parse(rawContent);
+    } catch (e) {
+        resultDiv.innerHTML = `
+            <div class="alert alert-danger">
+                <strong>JSON inválido retornado pelo LLM:</strong>
+                <pre class="mt-2 bg-dark text-light p-3 rounded">${escapeHtml(rawContent)}</pre>
+            </div>`;
+        resultContainer.classList.remove("d-none");
+        return;
+    }
+
+    let html = "";
+
+    (parsed.answers || []).forEach(answer => {
+        // Markdown
+        if (answer.markdow_answer?.length) {
+            html += '<div class="mb-4">';
+            answer.markdow_answer.forEach(line => {
+                const formatted = line
+                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                    .replace(/`(.*?)`/g, '<code class="bg-secondary text-light px-1 rounded">$1</code>');
+                html += `<p class="mb-2">${formatted}</p>`;
+            });
+            html += '</div>';
+        }
+
+        // Código
+        if (answer.code_answer?.length) {
+            answer.code_answer.forEach(block => {
+                const lang = (block.type_lang || "text").toUpperCase();
+                const code = block.code || "";
+
+                html += `
+                <div class="mb-4 bg-dark rounded overflow-hidden shadow-sm">
+                    <div class="d-flex justify-content-between align-items-center bg-secondary px-3 py-2">
+                        <span class="badge bg-primary fs-6">${lang}</span>
+                        <div>
+                            <button class="btn btn-sm btn-outline-light copy-code me-2" 
+                                    data-code="${btoa(unescape(encodeURIComponent(code)))}">
+                                Copiar
+                            </button>
+                            <button class="btn btn-sm btn-success send-to-editor">
+                                Send → Editor
+                            </button>
+                        </div>
+                    </div>
+                    <pre class="m-0 p-3 text-light" style="white-space: pre-wrap; font-size: 0.9rem;">
+<code>${escapeHtml(code)}</code>
+                    </pre>
+                </div>`;
+            });
+        }
+    });
+
+    if (!html) html = "<em class='text-muted'>Nenhum conteúdo estruturado retornado.</em>";
+    resultDiv.innerHTML = html;
+    resultContainer.classList.remove("d-none");
+
+    // Ativa botões de cópia
+    document.querySelectorAll(".copy-code").forEach(btn => {
+        btn.addEventListener("click", function () {
+            const code = decodeURIComponent(escape(atob(this.dataset.code)));
+            navigator.clipboard.writeText(code);
+            this.textContent = "Copiado!";
+            setTimeout(() => this.textContent = "Copiar", 2000);
+        });
+    });
+}
+
+// === EVENTOS ===
 vibeButton.addEventListener("click", callOpenAI);
 
-// Permite Enter + Ctrl para enviar
-vibePrompt.addEventListener("keydown", (e) => {
+vibePrompt.addEventListener("keydown", e => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         callOpenAI();
@@ -683,7 +843,7 @@ document.addEventListener("click", function (e) {
         const code = codeElement.textContent;
         const langBadge = codeBlock.querySelector(".badge");
         const lang = langBadge ? langBadge.textContent.trim() : "text";
-
+        console.log(lang);
         // Envia pro Ace
         editor.setValue(code);
         editor.gotoLine(1);
@@ -696,27 +856,37 @@ document.addEventListener("click", function (e) {
     }
 });
 
-// === EXECUTA O CÓDIGO DO EDITOR ===
-runCodeBtn.addEventListener("click", async () => {
-    const code = editor.getValue().trim();
+// === EXECUÇÃO DAS CÉLULAS DO MODO NOTEBOOK (Python / SQL) ===
+document.getElementById("notebookCells").addEventListener("click", async function (e) {
+    const runBtn = e.target.closest(".run-cell-btn");
+    if (!runBtn) return;
+
+    const cell = runBtn.closest(".border");
+    const textarea = cell.querySelector(".cell-code");
+    const outputDiv = cell.querySelector(".cell-output");
+    const outputContent = outputDiv.querySelector(".output-content");
+
+    const code = textarea.value.trim();
     if (!code) {
-        showAlert("Editor vazio!", "warning");
+        showAlert("Célula vazia!", "warning");
         return;
     }
 
-    runCodeBtn.disabled = true;
-    runCodeBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i> Executando...';
+    runBtn.disabled = true;
+    runBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
 
-    runResult.classList.remove("d-none");
-    runResult.innerHTML += `<div class="text-info">> Executando ${lastSentLang.toUpperCase()}...</div>`;
+    outputDiv.classList.remove("d-none");
+    outputContent.innerHTML = `<div class="text-info">Executando...</div>`;
 
     try {
+        const lang = cell.querySelector("small").textContent.includes("Python") ? "python" : "sql";
+
         const response = await fetch(`${BACKEND_URL}/api/vibe/execute`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 code: code,
-                language: lastSentLang,
+                language: lang,
                 datasourceId: datasourceSelect.value || null,
                 schema: schemaSelect.value || null
             })
@@ -725,30 +895,34 @@ runCodeBtn.addEventListener("click", async () => {
         const result = await response.json();
 
         if (response.ok) {
-            if (result.type === "query" && result.rows) {
-                let table = `<div class="text-success">> ${result.rowCount} linha(s) retornada(s)</div>`;
-                table += "<table class='table table-sm table-striped text-light'><thead><tr>";
-                result.columns.forEach(col => table += `<th>${col}</th>`);
-                table += "</tr></thead><tbody>";
-                result.rows.forEach(row => {
-                    table += "<tr>";
-                    row.forEach(cell => table += `<td>${escapeHtml(String(cell))}</td>`);
-                    table += "</tr>";
-                });
-                table += "</tbody></table>";
-                runResult.innerHTML += table;
-            } else {
-                runResult.innerHTML += `<div class="text-success">> ${result.message || "Executado com sucesso!"}</div>`;
+            // Usa a mesma função de renderização do Vibe!
+            renderVibeResponse(JSON.stringify({ answers: [{ markdow_answer: [], code_answer: [{ type_lang: lang, code: code }] }] }), outputContent, outputDiv);
+            // Mas depois substitui pelo resultado real
+            if (lang === "sql") {
+                window.showSqlResult(result);
+            } else if (lang === "python") {
+                let html = "";
+                if (result.console) {
+                    html += `<pre class="text-success small mb-3">${escapeHtml(result.console.trim())}</pre>`;
+                }
+                if (result.image) {
+                    html += `<div class="text-center my-4">
+                               <img src="${result.image}" class="img-fluid rounded shadow" style="max-width: 100%;" />
+                             </div>`;
+                }
+                outputContent.innerHTML = html || `<div class="text-success">Executado com sucesso!</div>`;
             }
+            showAlert(`${lang.toUpperCase()} executado!`, "success");
         } else {
-            runResult.innerHTML += `<div class="text-danger">Erro: ${result.ExceptionMessage || "Falha na execução"}</div>`;
+            outputContent.innerHTML = `<div class="text-danger">Erro: ${result.ExceptionMessage || "Falha"}</div>`;
+            showAlert("Erro ao executar", "danger");
         }
     } catch (err) {
-        runResult.innerHTML += `<div class="text-danger">Erro de conexão: ${err.message}</div>`;
+        outputContent.innerHTML = `<div class="text-danger">Erro de conexão: ${err.message}</div>`;
+        showAlert("Falha ao conectar", "danger");
     } finally {
-        runCodeBtn.disabled = false;
-        runCodeBtn.innerHTML = '<i class="fas fa-rocket me-2"></i> Run Code';
-        runResult.scrollTop = runResult.scrollHeight;
+        runBtn.disabled = false;
+        runBtn.innerHTML = "Run";
     }
 });
 
@@ -778,77 +952,80 @@ function createCell(code = "", lang = "python") {
 }
 
 
-// === EXECUÇÃO DAS CÉLULAS DO MODO NOTEBOOK (Python / SQL) ===
-document.getElementById("notebookCells").addEventListener("click", async function (e) {
-    const runBtn = e.target.closest(".run-cell-btn");
-    if (!runBtn) return;
-
-    const cell = runBtn.closest(".border");
-    const textarea = cell.querySelector(".cell-code");
-    const outputDiv = cell.querySelector(".cell-output");
-    const outputContent = outputDiv.querySelector(".output-content");
-
-    const code = textarea.value.trim();
-    if (!code) {
-        showAlert("Célula vazia!", "warning");
+// === RENDERIZA RESPOSTA DO VIBE! (TUDO FUNCIONA AGORA) ===
+function renderVibeResponse(rawContent, resultDiv, resultContainer) {
+    let parsed;
+    try {
+        parsed = JSON.parse(rawContent);
+    } catch (e) {
+        resultDiv.innerHTML = `
+            <div class="alert alert-danger">
+                <strong>JSON inválido retornado pelo LLM:</strong>
+                <pre class="mt-2 bg-dark text-light p-3 rounded">${escapeHtml(rawContent)}</pre>
+            </div>`;
+        resultContainer.classList.remove("d-none");
         return;
     }
 
-    // Mostra loading
-    runBtn.disabled = true;
-    runBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    let html = "";
 
-    outputDiv.classList.remove("d-none");
-    outputContent.innerHTML = `<div class="text-info">Executando ${cell.querySelector("small").textContent.includes("Python") ? "Python" : "SQL"}...</div>`;
-
-    try {
-        const lang = cell.querySelector("small").textContent.includes("Python") ? "python" : "sql";
-
-        const response = await fetch(`${BACKEND_URL}/api/vibe/execute`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                code: code,
-                language: lang,
-                datasourceId: datasourceSelect.value || null,
-                schema: schemaSelect.value || null
-            })
-        });
-
-        const result = await response.json();
-
-        if (response.ok) {
-            let html = "";
-
-            if (lang === "sql") {
-                if (result.type === "query" || result.type === "update") {
-                    // USA A FUNÇÃO GLOBAL FIXA
-                    window.showSqlResult(result);
-                } else {
-                    console.error("Resultado SQL inválido:", result);
-                }
-            } else {
-                html += `<div class="text-success">${result.message || "Executado com sucesso!"}</div>`;
-                if (result.console) {
-                    html += `<pre class="text-muted small">${escapeHtml(result.console)}</pre>`;
-                }
-            }
-
-            outputContent.innerHTML = html;
-            showAlert(`${lang.toUpperCase()} executado com sucesso!`, "success");
-
-        } else {
-            outputContent.innerHTML = `<div class="text-danger">Erro: ${result.ExceptionMessage || "Falha na execução"}</div>`;
-            showAlert(`Erro ao executar ${lang}`, "danger");
+    (parsed.answers || []).forEach(answer => {
+        // Texto em Markdown
+        if (answer.markdow_answer?.length) {
+            html += '<div class="mb-4">';
+            answer.markdow_answer.forEach(line => {
+                const formatted = line
+                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                    .replace(/`(.*?)`/g, '<code class="bg-secondary text-light px-1 rounded">$1</code>');
+                html += `<p class="mb-2">${formatted}</p>`;
+            });
+            html += '</div>';
         }
-    } catch (err) {
-        outputContent.innerHTML = `<div class="text-danger">Erro de conexão: ${err.message}</div>`;
-        showAlert("Falha ao conectar com o backend", "danger");
-    } finally {
-        runBtn.disabled = false;
-        runBtn.innerHTML = "Run";
-    }
-});
+
+        // Códigos — TODAS AS LINGUAGENS
+        if (answer.code_answer?.length) {
+            answer.code_answer.forEach(block => {
+                const lang = (block.type_lang || "text").toUpperCase();
+                const code = block.code || "";
+
+                // Container geral
+                html += `
+                <div class="mb-4 bg-dark rounded overflow-hidden shadow-sm">
+                    <div class="d-flex justify-content-between align-items-center bg-secondary px-3 py-2">
+                        <span class="badge bg-primary fs-6">${lang}</span>
+                        <div>
+                            <button class="btn btn-sm btn-outline-light copy-code me-2" 
+                                    data-code="${btoa(unescape(encodeURIComponent(code)))}">
+                                Copiar
+                            </button>
+                            <button class="btn btn-sm btn-success send-to-editor">
+                                Send → Editor
+                            </button>
+                        </div>
+                    </div>
+                    <pre class="m-0 p-3 text-light" style="white-space: pre-wrap; font-size: 0.9rem;">
+                        <code>${escapeHtml(code)}</code>
+                    </pre>
+                </div>`;
+            });
+        }
+    });
+
+    if (!html) html = "<em class='text-muted'>Nenhum conteúdo estruturado retornado.</em>";
+    resultDiv.innerHTML = html;
+    resultContainer.classList.remove("d-none");
+
+    // Ativa botões de cópia
+    document.querySelectorAll(".copy-code").forEach(btn => {
+        btn.addEventListener("click", function () {
+            const code = decodeURIComponent(escape(atob(this.dataset.code)));
+            navigator.clipboard.writeText(code);
+            this.textContent = "Copiado!";
+            setTimeout(() => this.textContent = "Copiar", 2000);
+        });
+    });
+}
 
 // Botão + Nova Célula
 document.getElementById("addCellBtn").addEventListener("click", () => {
@@ -976,15 +1153,15 @@ function showCurrentProject(project) {
     // Salva no localStorage (por garantia)
     localStorage.setItem(CURRENT_PROJECT_KEY, JSON.stringify(project));
     // ATUALIZA O BREADCRUMB
-    console.log(project);
+
     updateProjectBreadcrumb(project);
+    showDevEnvironment();
 }
 
 // MOSTRA O FORMULÁRIO DE CRIAR PROJETO
 function showCreateProjectForm() {
-    document.getElementById("currentProjectHeader").classList.add("d-none");
-    document.getElementById("createProjectForm").classList.remove("d-none");
-    document.getElementById("projectNameInput").focus();
+    document.getElementById("projectNameInput").value = "";
+    showProjectsScreen(); // VOLTA PRA TELA INICIAL
 }
 
 // EVENTO: TROCAR PROJETO
@@ -992,7 +1169,12 @@ document.getElementById("changeProjectBtn")?.addEventListener("click", () => {
     if (confirm("Tem certeza que quer trocar de projeto? O atual será mantido no histórico.")) {
         localStorage.removeItem(CURRENT_PROJECT_KEY);
         showCreateProjectForm();
+        updateProjectBreadcrumb(null);
+
+
         showAlert("Projeto atual liberado. Crie ou carregue outro.", "info");
+        // ESCONDE TODO O CONTEÚDO DO PROJETO
+        hideDevEnvironment();
     }
 });
 
@@ -1013,3 +1195,148 @@ function updateProjectBreadcrumb(project) {
         projectItem.style.display = "none";
     }
 }
+
+async function loadAllProjects() {
+    try {
+        const response = await fetch( `${BACKEND_URL}/api/projects/list`);
+        const projects = await response.json();
+
+        const container = document.getElementById("projectsList");
+        const noProjectsMsg = document.getElementById("noProjectsMessage");
+
+        if (!projects || projects.length === 0) {
+            noProjectsMsg.classList.remove("d-none");
+            container.innerHTML = "";
+            return;
+        }
+
+        noProjectsMsg.classList.add("d-none");
+        container.innerHTML = projects.map(p => `
+            <div class="col-md-6 col-lg-4">
+                <div class="card h-100 shadow-sm border-0 hover-shadow cursor-pointer" 
+                     onclick="loadProject('${p.name}')">
+                    <div class="card-body d-flex flex-column">
+                        <h5 class="card-title text-primary mb-2">
+                            <i class="fas fa-folder me-2"></i>
+                            ${escapeHtml(p.displayName)}
+                        </h5>
+                        <p class="card-text text-muted small mb-2">
+                            <strong>${p.fileCount}</strong> arquivos • 
+                            <strong>${p.historyCount}</strong> interações
+                        </p>
+                        <p class="card-text text-muted small mt-auto">
+                            Criado em ${formatDate(p.createdAt)}
+                        </p>
+                    </div>
+                    <div class="card-footer bg-transparent border-0">
+                        <small class="text-success">
+                            <i class="fas fa-arrow-right"></i> Abrir projeto
+                        </small>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+
+    } catch (err) {
+        console.error("Erro ao carregar projetos:", err);
+        showAlert("Erro ao carregar projetos", "danger");
+    }
+}
+
+// Função auxiliar para formatar data
+function formatDate(isoString) {
+    if (!isoString || isoString === "Desconhecido") return "data desconhecida";
+    const date = new Date(isoString);
+    return date.toLocaleDateString("pt-BR") + " às " + date.toLocaleTimeString("pt-BR", {hour: "2-digit", minute: "2-digit"});
+}
+
+
+// Função para carregar um projeto ao clicar
+async function loadProject(projectName) {
+    try {
+        const response = await fetch(`${BACKEND_URL}/api/projects/${projectName}`);
+        if (!response.ok) throw new Error("Projeto não encontrado");
+        const project = await response.json();
+        console.log(project);
+        showCurrentProject(project.name);
+    } catch (err) {
+        showAlert("Erro ao carregar projeto: " + err.message, "danger");
+    }
+}
+
+// ESCONDE O CONTEÚDO PRINCIPAL QUANDO NÃO TEM PROJETO
+function hideDevEnvironment() {
+    document.getElementById("devEnv").classList.add("d-none");
+}
+
+function showProjectsScreen() {
+    document.getElementById("projectsEnv").classList.remove("d-none");
+    document.getElementById("devEnv").classList.add("d-none");
+    loadAllProjects(); // CARREGA A LISTA
+}
+
+function showDevEnvironment() {
+    document.getElementById("projectsEnv").classList.add("d-none");
+    document.getElementById("devEnv").classList.remove("d-none");
+}
+
+// Link "Projects" no breadcrumb volta pra tela inicial
+document.getElementById("backToProjects")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (confirm("Sair do projeto atual projeto?")) {
+        localStorage.removeItem("infinitestack_current_project");
+        showProjectsScreen();
+        showAlert("Projeto fechado. Bem-vindo de volta!", "info");
+    }
+});
+
+document.addEventListener("DOMContentLoaded", () => {
+    const saved = localStorage.getItem("infinitestack_current_project");
+    if (saved) {
+        const project = JSON.parse(saved);
+        showCurrentProject(project);
+    } else {
+        showProjectsScreen(); // tela inicial limpa
+    }
+});
+
+document.getElementById("button-files")?.addEventListener("click", async () => {
+    const rootInput = document.getElementById("rootFolder");
+    const textarea = document.getElementById("promptFiles");
+    const btnText = document.getElementById("promptFilesText");
+
+    const root = rootInput.value.trim();
+    if (!root) {
+        showAlert("Digite o caminho da pasta!", "warning");
+        return;
+    }
+
+    btnText.textContent = "Carregando...";
+
+    try {
+        const res = await fetch(`${BACKEND_URL}/api/projects/files/list?root=${encodeURIComponent(root)}`);
+        const files = await res.json();
+
+        if (!res.ok) {
+            throw new Error(files.ExceptionMessage || "Erro ao carregar");
+        }
+
+        if (files.length === 0) {
+            showAlert("Nenhum arquivo de texto encontrado nessa pasta.", "info");
+            return;
+        }
+
+        // APPEND — NÃO SUBSTITUI!
+        const current = textarea.value.trim();
+        const newLines = files.join("\n");
+        textarea.value = current ? current + "\n" + newLines : newLines;
+
+        showAlert(`${files.length} arquivo(s) adicionado(s) ao contexto!`, "success");
+
+
+    } catch (err) {
+        showAlert("Erro: " + err.message, "danger");
+    } finally {
+        btnText.textContent = "Append files";
+    }
+});

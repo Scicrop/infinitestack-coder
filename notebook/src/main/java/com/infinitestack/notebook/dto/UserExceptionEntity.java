@@ -1,3 +1,3 @@
-package com.infinitestack.notebook.entity;
+package com.infinitestack.notebook.dto;
 
 public record UserExceptionEntity(String ExceptionTitle, String ExceptionMessage) {}

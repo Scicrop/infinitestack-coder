@@ -4,21 +4,23 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.infinitestack.notebook.util.ProjectUtils;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.converter.StringHttpMessageConverter;
 import org.springframework.web.bind.annotation.*;
-import com.infinitestack.notebook.entity.UserExceptionEntity;
+import com.infinitestack.notebook.dto.UserExceptionEntity;
 import org.springframework.http.*;
-import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
 
 
-import java.nio.charset.Charset;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.*;
+import java.util.stream.Collectors;
 
 
 @RestController
@@ -29,12 +31,22 @@ public class LLMController {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @PostMapping("/chat")
-    public ResponseEntity<?> chat(@RequestBody Map<String, Object> payload) {
+    public ResponseEntity<?> chat(@RequestBody Map<String, Object> payload) throws IOException {
         String provider = (String) payload.get("provider");
         String model = (String) payload.get("model");
         String apiKey = (String) payload.get("apiKey");
         List<Map<String, String>> messages = (List<Map<String, String>>) payload.get("messages");
-        String projectName = (String) payload.get("projectName"); // ← NOVO: vem do frontend
+        String projectName = (String) payload.get("projectName");
+        List<String> filePaths = (List<String>) payload.get("filePaths");
+        String tableDDL = (String) payload.get("tableDDL");
+        Integer countHistMsg = 0;
+        try{
+            String histMsg = (String) payload.get("histMsg");
+            countHistMsg = Integer.parseInt(histMsg);
+        } catch (NumberFormatException e) {
+
+        }
+
 
         if (!"openai".equals(provider)) {
             return ResponseEntity.badRequest()
@@ -46,11 +58,16 @@ public class LLMController {
                     .body(new UserExceptionEntity("Projeto não informado", "O campo 'projectName' é obrigatório."));
         }
 
+        Path projectDir = Paths.get("/opt/infinitestack-notebook/projects");
+        Path projectInternalDir = projectDir.resolve(projectName.trim());
+
+
         try {
             // === MONTA MENSAGENS COM CONTEXTO (igual antes) ===
             List<Map<String, String>> finalMessages = new ArrayList<>();
             finalMessages.add(Map.of("role", "system", "content", """
             Você é um assistente de programação expert...
+            
             INSTRUÇÕES OBRIGATÓRIAS:
             - Responda SEMPRE no formato JSON exato abaixo
             - Nunca use Markdown, nunca use blocos de código com ```
@@ -85,10 +102,47 @@ public class LLMController {
                 finalMessages.add(Map.of("role", "system", "content", "CONTEXTO DO PROJETO (README.md):\n" + readmeContent.trim()));
             }
 
-            String tableDDL = (String) payload.get("tableDDL");
+
             if (tableDDL != null && !tableDDL.trim().isEmpty()) {
-                finalMessages.add(Map.of("role", "system", "content", "ESTRUTURA DO BANCO (DDL da tabela selecionada):\n" + tableDDL.trim()));
+                String database = (String) payload.get("database");
+                String schema = (String) payload.get("schema");
+                String tableName = (String) payload.get("tableName");
+                finalMessages.add(Map.of("role", "system", "content", "Use essa ESTRUTURA da tabela ("+schema+"."+tableName+", do banco "+database+") selecionada, para compor sua resposta:\n" + tableDDL.trim()));
             }
+            StringBuffer filesContext = new StringBuffer();
+            if (filePaths != null && !filePaths.isEmpty()) {
+                filesContext.append("\n\n=== ARQUIVOS DO CONTEXTO ===\n");
+                for (String path : filePaths) {
+                    try {
+                        Path file = Paths.get(path).normalize();
+                        if (Files.exists(file) && Files.isRegularFile(file)) {
+                            String content = Files.readString(file, StandardCharsets.UTF_8);
+                            String md5sum = ProjectUtils.md5OfFile(file);
+                            System.out.println(md5sum);
+                            filesContext.append("\n--- ARQUIVO: ").append(path).append(" ---\n")
+                                    .append(content.length() > 8000
+                                            ? content.substring(0, 8000) + "\n// ... (truncado)"
+                                            : content)
+                                    .append("\n--- FIM ---\n");
+                        } else {
+                            filesContext.append("\n--- ARQUIVO NÃO ENCONTRADO: ").append(path).append(" ---\n");
+                        }
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+                finalMessages.add(Map.of("role", "system", "content", filesContext.toString()));
+            }
+
+            String historyMsg = "";
+            if(countHistMsg > 0 && countHistMsg <= 10){
+                historyMsg = getHistory(countHistMsg, projectDir.resolve(projectName.trim()));
+                finalMessages.add(Map.of("role", "system", "content", historyMsg));
+            } else if (countHistMsg > 10) {
+                historyMsg = getHistory(10, projectDir.resolve(projectName.trim()));
+                finalMessages.add(Map.of("role", "system", "content", historyMsg));
+            }
+
 
             String lang = (String) payload.get("language");
             if (lang != null && !lang.isEmpty()) {
@@ -110,15 +164,21 @@ public class LLMController {
             headers.set("Authorization", "Bearer " + apiKey);
             headers.setContentType(MediaType.APPLICATION_JSON);
 
-            Map<String, Object> body = Map.of(
-                    "model", model,
-                    "messages", finalMessages,
-                    "temperature", 0.3,
-                    "max_tokens", 4000,
-                    "response_format", Map.of("type", "json_object")
-            );
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("model", model);
+            requestBody.put("messages", finalMessages);
 
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+            requestBody.put("response_format", Map.of("type", "json_object"));
+
+            if (model != null && (model.toLowerCase().contains("gpt-5"))) {
+
+                requestBody.put("temperature", 1);
+            } else {
+                requestBody.put("max_tokens", 4000);
+                requestBody.put("temperature", 0.3);
+            }
+
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
             RestTemplate rest = new RestTemplate();
             ResponseEntity<Map> openAiResponse = rest.exchange(
                     "https://api.openai.com/v1/chat/completions",
@@ -170,7 +230,7 @@ public class LLMController {
             historyEntry.set("response", llmJsonResponse);
 
             // === SALVA NO ARQUIVO DO PROJETO ===
-            Path projectDir = Paths.get("/opt/infinitestack-notebook/projects");
+
             Path projectFile = projectDir.resolve(projectName.trim() + ".json");
 
             JsonNode projectJson;
@@ -187,7 +247,7 @@ public class LLMController {
             Date now = new Date();
             String millis = String.valueOf(now.getTime());
             
-            // Salva de bonito
+
             objectMapper.writerWithDefaultPrettyPrinter()
                     .writeValue(projectDir.resolve(projectName.trim()+ "/" + millis + ".json").toFile(), projectJson);
 
@@ -199,6 +259,55 @@ public class LLMController {
             return ResponseEntity.status(500)
                     .body(new UserExceptionEntity("Erro ao processar Vibe!", e.getMessage()));
         }
+    }
+
+    private String getHistory(int countHistoryMsg, Path internalDir) throws IOException {
+        String history = "";
+
+        File directory = internalDir.toFile();
+        if (!directory.isDirectory()) {
+            throw new IllegalArgumentException("O caminho fornecido não é um diretório.");
+        }
+
+
+        List<String> filesArray = Arrays.stream(directory.listFiles())
+                .filter(file -> file.getName().endsWith(".json"))
+                .sorted(Comparator.comparingLong(File::lastModified).reversed())
+                .limit(countHistoryMsg)
+                .map(File::getName)
+                .collect(Collectors.toList());
+
+
+        for (String fileName : filesArray) {
+
+            Path histFile = internalDir.resolve(fileName);
+            JsonNode histJson = objectMapper.readTree(histFile.toFile());
+
+            JsonNode userNode = histJson.path("history").get(0).path("messages").findValue("role");
+
+            JsonNode msgsNode = histJson.path("history").get(0).path("messages");
+            for (JsonNode msg : msgsNode) {
+                if(msg.path("role").asText().equals("user")) {
+                    history = history + "Lembrando, que o usuário perguntou: " +msg.path("content").asText() + "\n";
+                }
+            }
+
+            JsonNode responseNode = histJson.path("history").get(0).path("response");
+            JsonNode answersNode = responseNode.path("answers").get(0);
+            history = history + "E o modelo respondeu: ";
+            for (JsonNode markdown : answersNode.path("markdow_answer")) {
+                history = history + markdown.asText() + "\n";
+            }
+
+            for (JsonNode code : answersNode.path("code_answer")) {
+                String typeLang = code.path("type_lang").asText();
+                String codeContent = code.path("code").asText();
+                history = history + "["+ typeLang + "]: "+codeContent+ "\n\n";
+            }
+
+        }
+
+        return history;
     }
 
 }

@@ -2,7 +2,7 @@ package com.infinitestack.notebook.controller;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.infinitestack.notebook.entity.UserExceptionEntity;
+import com.infinitestack.notebook.dto.UserExceptionEntity;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -69,25 +69,62 @@ public class VibeExecutionController {
                 }
             }
 
-            if (dsNode == null || !"postgresql".equalsIgnoreCase(dsNode.get("type").asText())) {
+            if (dsNode == null) {
                 return ResponseEntity.badRequest()
-                        .body(new UserExceptionEntity("Banco inválido", "Apenas PostgreSQL é suportado."));
+                        .body(new UserExceptionEntity("DataSource não encontrado", "ID: " + datasourceId));
             }
 
-            String url = String.format("jdbc:postgresql://%s:%d/%s",
-                    dsNode.get("host").asText(),
-                    dsNode.get("port").asInt(5432),
-                    dsNode.get("database").asText());
+            String type = dsNode.has("type") ? dsNode.get("type").asText().toLowerCase() : "";
+            if (!"postgresql".equals(type) && !"oracle".equals(type)) {
+                return ResponseEntity.badRequest()
+                        .body(new UserExceptionEntity("Banco não suportado", "Apenas PostgreSQL e Oracle são suportados."));
+            }
 
+            String url;
             String username = dsNode.get("username").asText();
             String password = dsNode.get("password").asText();
 
+            if ("oracle".equals(type)) {
+                // ORACLE — aceita SID ou Service Name
+                String host = dsNode.get("host").asText("localhost");
+                int port = dsNode.get("port").asInt(1521);
+                String sid = dsNode.has("sid") ? dsNode.get("sid").asText() : "";
+                String serviceName = dsNode.has("serviceName") ? dsNode.get("serviceName").asText() : "";
+
+                if (!sid.isEmpty()) {
+                    url = String.format("jdbc:oracle:thin:@%s:%d:%s", host, port, sid);
+                } else if (!serviceName.isEmpty()) {
+                    url = String.format("jdbc:oracle:thin:@%s:%d/%s", host, port, serviceName);
+                } else {
+                    url = String.format("jdbc:oracle:thin:@%s:%d/XE", host, port); // fallback XE
+                }
+            } else {
+                // PostgreSQL (igual antes)
+                url = String.format("jdbc:postgresql://%s:%d/%s",
+                        dsNode.get("host").asText(),
+                        dsNode.get("port").asInt(5432),
+                        dsNode.get("database").asText());
+            }
+
             try (Connection conn = DriverManager.getConnection(url, username, password)) {
-                if (schema != null && !schema.isEmpty()) {
+                // Schema no Oracle é o usuário mesmo
+                if ("oracle".equals(type) && schema != null && !schema.isEmpty()) {
+                    try (Statement stmt = conn.createStatement()) {
+                        stmt.execute("ALTER SESSION SET CURRENT_SCHEMA = " + schema);
+                    }
+                } else if ("postgresql".equals(type) && schema != null && !schema.isEmpty()) {
+
                     conn.setSchema(schema);
+
+                    try (Statement setup = conn.createStatement()) {
+                        setup.execute("SET search_path TO public, \"$user\", "+schema);
+                    }catch (Exception e){
+                        e.printStackTrace();
+                    }
+
                 }
 
-                boolean isQuery = sql.toLowerCase().trim().startsWith("select");
+                boolean isQuery = sql.trim().toLowerCase().startsWith("select");
 
                 if (isQuery) {
                     try (Statement stmt = conn.createStatement();
@@ -116,9 +153,9 @@ public class VibeExecutionController {
                         result.put("rowCount", rows.size());
 
                         return ResponseEntity.ok(result);
-
                     }
                 } else {
+
                     try (Statement stmt = conn.createStatement()) {
                         int affected = stmt.executeUpdate(sql);
                         Map<String, Object> result = new HashMap<>();
@@ -135,6 +172,7 @@ public class VibeExecutionController {
             }
 
         } catch (Exception e) {
+            e.printStackTrace();
             return ResponseEntity.status(500)
                     .body(new UserExceptionEntity("Erro interno", e.getMessage()));
         }
@@ -234,4 +272,6 @@ public class VibeExecutionController {
                     .body(new UserExceptionEntity("Erro Python", e.getMessage()));
         }
     }
+
+
 }

@@ -2,7 +2,7 @@ package com.infinitestack.notebook.controller;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.infinitestack.notebook.entity.UserExceptionEntity;
+import com.infinitestack.notebook.dto.UserExceptionEntity;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -70,39 +70,80 @@ public class DataSourceController {
                         .body(new UserExceptionEntity("DataSource não encontrado", "ID: " + datasourceId));
             }
 
-            String type = dsNode.has("type") ? dsNode.get("type").asText() : "";
-            if (!"postgresql".equalsIgnoreCase(type)) {
-                return ResponseEntity.ok(List.of()); // retorna vazio se não for PostgreSQL
+            String type = dsNode.has("type") ? dsNode.get("type").asText().toLowerCase() : "";
+
+            // SUPORTE A POSTGRESQL E ORACLE
+            if (!"postgresql".equals(type) && !"oracle".equals(type)) {
+                return ResponseEntity.ok(List.of()); // retorna vazio se não for suportado
             }
 
-            String url = String.format("jdbc:postgresql://%s:%d/%s",
-                    dsNode.get("host").asText(),
-                    dsNode.get("port").asInt(5432),
-                    dsNode.get("database").asText());
-
+            String url;
             String username = dsNode.get("username").asText();
             String password = dsNode.get("password").asText();
 
-            // Conexão JDBC pura (sem Spring Data)
-            try (var conn = DriverManager.getConnection(url, username, password)) {
-                var sql = "SELECT schema_name FROM information_schema.schemata " +
-                        "WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') " +
-                        "ORDER BY schema_name";
+            if ("oracle".equals(type)) {
+                String host = dsNode.get("host").asText("localhost");
+                int port = dsNode.get("port").asInt(1521);
+                String sid = dsNode.has("sid") ? dsNode.get("sid").asText() : "";
+                String serviceName = dsNode.has("serviceName") ? dsNode.get("serviceName").asText() : "";
 
-                try (var stmt = conn.createStatement();
-                     var rs = stmt.executeQuery(sql)) {
+                if (!sid.isEmpty()) {
+                    url = String.format("jdbc:oracle:thin:@%s:%d:%s", host, port, sid);
+                } else if (!serviceName.isEmpty()) {
+                    url = String.format("jdbc:oracle:thin:@%s:%d/%s", host, port, serviceName);
+                } else {
+                    url = String.format("jdbc:oracle:thin:@%s:%d/XE", host, port); // fallback XE
+                }
+            } else {
+                // PostgreSQL
+                url = String.format("jdbc:postgresql://%s:%d/%s",
+                        dsNode.get("host").asText(),
+                        dsNode.get("port").asInt(5432),
+                        dsNode.get("database").asText());
+            }
 
-                    List<String> schemas = new ArrayList<>();
+            try (Connection conn = DriverManager.getConnection(url, username, password)) {
+                List<String> schemas = new ArrayList<>();
+                String sql;
+
+                if ("oracle".equals(type)) {
+                    // Oracle: lista schemas do usuário + ALL_USERS (sem duplicar)
+                    sql = """
+                    SELECT DISTINCT username 
+                    FROM all_users 
+                    WHERE username NOT IN ('SYS', 'SYSTEM', 'OUTLN', 'DBSNMP', 'APPQOSSYS')
+                    ORDER BY username
+                    """;
+                } else {
+                    // PostgreSQL
+                    sql = """
+                    SELECT schema_name 
+                    FROM information_schema.schemata 
+                    WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                    ORDER BY schema_name
+                    """;
+                }
+
+                try (Statement stmt = conn.createStatement();
+                     ResultSet rs = stmt.executeQuery(sql)) {
+
                     while (rs.next()) {
                         schemas.add(rs.getString(1));
                     }
-                    return ResponseEntity.ok(schemas);
                 }
+
+                return ResponseEntity.ok(schemas);
+
+            } catch (SQLException e) {
+                return ResponseEntity.status(500)
+                        .body(new UserExceptionEntity("Erro de conexão",
+                                "Não foi possível conectar ao banco: " + e.getMessage()));
             }
 
         } catch (Exception e) {
+            e.printStackTrace();
             return ResponseEntity.status(500)
-                    .body(new UserExceptionEntity("Erro de conexão", "Não foi possível conectar ao PostgreSQL: " + e.getMessage()));
+                    .body(new UserExceptionEntity("Erro interno", e.getMessage()));
         }
     }
 
@@ -127,45 +168,87 @@ public class DataSourceController {
                 }
             }
 
-            if (dsNode == null || !"postgresql".equalsIgnoreCase(dsNode.get("type").asText())) {
-                return ResponseEntity.ok(List.of());
+            if (dsNode == null) {
+                return ResponseEntity.badRequest()
+                        .body(new UserExceptionEntity("DataSource não encontrado", "ID: " + datasourceId));
             }
 
-            String url = String.format("jdbc:postgresql://%s:%d/%s",
-                    dsNode.get("host").asText(),
-                    dsNode.get("port").asInt(),
-                    dsNode.get("database").asText());
+            String type = dsNode.has("type") ? dsNode.get("type").asText().toLowerCase() : "";
 
+            if (!"postgresql".equals(type) && !"oracle".equals(type)) {
+                return ResponseEntity.ok(List.of()); // retorna vazio se não suportado
+            }
+
+            // === MONTA URL DE CONEXÃO ===
+            String url;
             String username = dsNode.get("username").asText();
             String password = dsNode.get("password").asText();
 
-            try (var conn = DriverManager.getConnection(url, username, password)) {
-                String sql = """
-                SELECT tablename 
-                FROM pg_tables 
-                WHERE schemaname = ? 
-                ORDER BY tablename
-                """;
+            if ("oracle".equals(type)) {
+                String host = dsNode.get("host").asText("localhost");
+                int port = dsNode.get("port").asInt(1521);
+                String sid = dsNode.has("sid") ? dsNode.get("sid").asText() : "";
+                String serviceName = dsNode.has("serviceName") ? dsNode.get("serviceName").asText() : "";
 
-                try (var ps = conn.prepareStatement(sql)) {
-                    ps.setString(1, schema);
-                    try (var rs = ps.executeQuery()) {
-                        List<String> tables = new ArrayList<>();
+                if (!sid.isEmpty()) {
+                    url = String.format("jdbc:oracle:thin:@%s:%d:%s", host, port, sid);
+                } else if (!serviceName.isEmpty()) {
+                    url = String.format("jdbc:oracle:thin:@%s:%d/%s", host, port, serviceName);
+                } else {
+                    url = String.format("jdbc:oracle:thin:@%s:%d/XE", host, port);
+                }
+            } else {
+                url = String.format("jdbc:postgresql://%s:%d/%s",
+                        dsNode.get("host").asText(),
+                        dsNode.get("port").asInt(5432),
+                        dsNode.get("database").asText());
+            }
+
+            try (Connection conn = DriverManager.getConnection(url, username, password)) {
+                List<String> tables = new ArrayList<>();
+                String sql;
+
+                if ("oracle".equals(type)) {
+                    sql = """
+                    SELECT table_name 
+                    FROM all_tables 
+                    WHERE owner = UPPER(?) 
+                    ORDER BY table_name
+                    """;
+                } else {
+                    sql = """
+                    SELECT tablename 
+                    FROM pg_tables 
+                    WHERE schemaname = ? 
+                    ORDER BY tablename
+                    """;
+                }
+
+                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                    // BUG FIX: UPPER só para Oracle
+                    ps.setString(1, "oracle".equals(type) ? schema.toUpperCase() : schema);
+
+                    try (ResultSet rs = ps.executeQuery()) {
                         while (rs.next()) {
                             tables.add(rs.getString(1));
                         }
-                        return ResponseEntity.ok(tables);
                     }
                 }
+
+                return ResponseEntity.ok(tables);
+
+            } catch (SQLException e) {
+                return ResponseEntity.status(500)
+                        .body(new UserExceptionEntity("Erro de conexão", "Não foi possível conectar ao banco: " + e.getMessage()));
             }
 
         } catch (Exception e) {
+            e.printStackTrace();
             return ResponseEntity.status(500)
-                    .body(new UserExceptionEntity("Erro de conexão", "Falha ao listar tabelas: " + e.getMessage()));
+                    .body(new UserExceptionEntity("Erro interno", e.getMessage()));
         }
     }
 
-    // Adicione no DataSourceController.java
 
     @GetMapping("/schemas/{datasourceId}/tables/{tableName}/ddl")
     public ResponseEntity<?> getTableDDL(
@@ -189,22 +272,54 @@ public class DataSourceController {
                 }
             }
 
-            if (dsNode == null || !"postgresql".equalsIgnoreCase(dsNode.get("type").asText())) {
+            if (dsNode == null) {
                 return ResponseEntity.badRequest()
-                        .body(new UserExceptionEntity("Inválido", "DataSource não é PostgreSQL."));
+                        .body(new UserExceptionEntity("DataSource não encontrado", "ID: " + datasourceId));
             }
 
-            String url = String.format("jdbc:postgresql://%s:%d/%s",
-                    dsNode.get("host").asText(),
-                    dsNode.get("port").asInt(),
-                    dsNode.get("database").asText());
+            String type = dsNode.has("type") ? dsNode.get("type").asText().toLowerCase() : "";
 
+            if (!"postgresql".equals(type) && !"oracle".equals(type)) {
+                return ResponseEntity.badRequest()
+                        .body(new UserExceptionEntity("Banco não suportado", "DDL só para PostgreSQL e Oracle."));
+            }
+
+            // === MONTA URL DE CONEXÃO ===
+            String url;
             String username = dsNode.get("username").asText();
             String password = dsNode.get("password").asText();
 
-            try (var conn = DriverManager.getConnection(url, username, password)) {
-                // Usa pg_get_constraintdef + colunas + índices + constraints
-                String ddl = generatePostgreSQLDDL(conn, schema, tableName);
+            if ("oracle".equals(type)) {
+                String host = dsNode.get("host").asText("localhost");
+                int port = dsNode.get("port").asInt(1521);
+                String sid = dsNode.has("sid") ? dsNode.get("sid").asText() : "";
+                String serviceName = dsNode.has("serviceName") ? dsNode.get("serviceName").asText() : "";
+
+                if (!sid.isEmpty()) {
+                    url = String.format("jdbc:oracle:thin:@%s:%d:%s", host, port, sid);
+                } else if (!serviceName.isEmpty()) {
+                    url = String.format("jdbc:oracle:thin:@%s:%d/%s", host, port, serviceName);
+                } else {
+                    url = String.format("jdbc:oracle:thin:@%s:%d/XE", host, port);
+                }
+            } else {
+                url = String.format("jdbc:postgresql://%s:%d/%s",
+                        dsNode.get("host").asText(),
+                        dsNode.get("port").asInt(5432),
+                        dsNode.get("database").asText());
+            }
+
+            try (Connection conn = DriverManager.getConnection(url, username, password)) {
+                String ddl;
+
+                if ("oracle".equals(type)) {
+                    // Oracle usa DatabaseMetaData + consultas específicas
+                    ddl = generateOracleDDL(conn, schema.toUpperCase(), tableName.toUpperCase());
+                } else {
+                    // PostgreSQL
+                    ddl = generatePostgreSQLDDL(conn, schema, tableName);
+                }
+
                 return ResponseEntity.ok()
                         .contentType(MediaType.TEXT_PLAIN)
                         .body(ddl);
@@ -216,8 +331,130 @@ public class DataSourceController {
             }
 
         } catch (Exception e) {
+            e.printStackTrace();
             return ResponseEntity.status(500)
                     .body(new UserExceptionEntity("Erro interno", e.getMessage()));
+        }
+    }
+
+    // === DDL PARA ORACLE (USANDO DatabaseMetaData + CONSULTAS ESPECÍFICAS) ===
+    private String generateOracleDDL(Connection conn, String owner, String tableName) throws SQLException {
+        StringBuilder ddl = new StringBuilder();
+        DatabaseMetaData meta = conn.getMetaData();
+
+        ddl.append("-- DDL para tabela: ").append(owner).append(".").append(tableName).append("\n\n");
+
+        // === COLUNAS ===
+        try (ResultSet columns = meta.getColumns(null, owner, tableName, null)) {
+            ddl.append("CREATE TABLE ").append(owner).append(".").append(tableName).append(" (\n");
+
+            List<String> columnLines = new ArrayList<>();
+
+            while (columns.next()) {
+                String colName = columns.getString("COLUMN_NAME");
+                String typeName = columns.getString("TYPE_NAME");
+                int size = columns.getInt("COLUMN_SIZE");
+                int nullable = columns.getInt("NULLABLE");
+                String defaultVal = columns.getString("COLUMN_DEF");
+
+                StringBuilder line = new StringBuilder("  ").append(colName).append(" ").append(typeName);
+                if (size > 0 && !typeName.contains("CHAR") && !typeName.contains("DATE")) {
+                    line.append("(").append(size).append(")");
+                }
+
+                if (defaultVal != null && !defaultVal.isEmpty()) {
+                    line.append(" DEFAULT ").append(defaultVal);
+                }
+
+                if (nullable == DatabaseMetaData.columnNoNulls) {
+                    line.append(" NOT NULL");
+                }
+
+                columnLines.add(line.toString());
+            }
+
+            ddl.append(String.join(",\n", columnLines));
+            ddl.append("\n);\n\n");
+        }
+
+        // === COMENTÁRIOS DA TABELA ===
+        String tableComment = getOracleTableComment(conn, owner, tableName);
+        if (tableComment != null && !tableComment.isBlank()) {
+            ddl.append("COMMENT ON TABLE ").append(owner).append(".").append(tableName)
+                    .append(" IS '").append(escapeQuotes(tableComment)).append("';\n\n");
+        }
+
+        // === COMENTÁRIOS DAS COLUNAS ===
+        appendOracleColumnComments(conn, owner, tableName, ddl);
+
+        // === PRIMARY KEY ===
+        try (ResultSet pk = meta.getPrimaryKeys(null, owner, tableName)) {
+            if (pk.next()) {
+                List<String> pkList = new ArrayList<>();
+                String pkName = pk.getString("PK_NAME");
+                do {
+                    pkList.add(pk.getString("COLUMN_NAME"));
+                } while (pk.next());
+
+                ddl.append("ALTER TABLE ").append(owner).append(".").append(tableName)
+                        .append(" ADD CONSTRAINT ").append(pkName != null ? pkName : "pk_" + tableName)
+                        .append(" PRIMARY KEY (").append(String.join(", ", pkList)).append(");\n\n");
+            }
+        }
+
+        // === ÍNDICES (exceto PK) ===
+        try (ResultSet indexes = meta.getIndexInfo(null, owner, tableName, false, true)) {
+            Map<String, StringBuilder> indexMap = new LinkedHashMap<>();
+            while (indexes.next()) {
+                String indexName = indexes.getString("INDEX_NAME");
+                if (indexName == null || indexName.contains("PK")) continue;
+
+                String col = indexes.getString("COLUMN_NAME");
+                if (col != null) {
+                    indexMap.computeIfAbsent(indexName, k -> new StringBuilder())
+                            .append(col).append(", ");
+                }
+            }
+
+            for (var entry : indexMap.entrySet()) {
+                String cols = entry.getValue().toString().replaceAll(", $", "");
+                ddl.append("CREATE INDEX ").append(entry.getKey())
+                        .append(" ON ").append(owner).append(".").append(tableName)
+                        .append(" (").append(cols).append(");\n");
+            }
+        }
+
+        return ddl.toString();
+    }
+
+    // === COMENTÁRIO DA TABELA ORACLE ===
+    private String getOracleTableComment(Connection conn, String owner, String tableName) throws SQLException {
+        String sql = "SELECT comments FROM all_tab_comments WHERE owner = ? AND table_name = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, owner);
+            ps.setString(2, tableName);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getString(1);
+            }
+        }
+        return null;
+    }
+
+    // === COMENTÁRIOS DAS COLUNAS ORACLE ===
+    private void appendOracleColumnComments(Connection conn, String owner, String tableName, StringBuilder ddl) throws SQLException {
+        String sql = "SELECT column_name, comments FROM all_col_comments WHERE owner = ? AND table_name = ? AND comments IS NOT NULL";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, owner);
+            ps.setString(2, tableName);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String col = rs.getString("column_name");
+                    String comment = rs.getString("comments");
+                    ddl.append("COMMENT ON COLUMN ").append(owner).append(".").append(tableName)
+                            .append(".").append(col).append(" IS '")
+                            .append(escapeQuotes(comment)).append("';\n");
+                }
+            }
         }
     }
 
